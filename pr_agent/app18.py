@@ -312,4 +312,4 @@ async def receive_findings(payload: IncomingFindingsPayload):
             get_settings().set("config.model_reasoning", original_reasoning)
 
 if __name__ == "__main__":
-    uvicorn.run("pr_agent.app17:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("pr_agent.app18:app", host="0.0.0.0", port=8000, reload=True)
