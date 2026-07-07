@@ -179,7 +179,7 @@ class PRCodeSuggestions:
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
-                get_settings().data = {"artifact": pr_body}
+                get_settings().data = {"artifact": pr_body, "raw_data": data}
                 return
         except Exception as e:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",

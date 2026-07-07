@@ -7,6 +7,15 @@ from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
 
+import tracemalloc
+import warnings
+
+# 1. Start the tracker to satisfy the Python interpreter
+tracemalloc.start()
+
+# 2. Mute the specific un-awaited coroutine noise from your terminal screen
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="coroutine .* was never awaited")
+
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 

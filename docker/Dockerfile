@@ -53,3 +53,9 @@ ADD docker/mosaico docker/mosaico
 FROM base AS cli
 ADD pr_agent pr_agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]
+
+FROM base AS integration_app
+ADD pr_agent pr_agent
+EXPOSE 8000
+CMD ["python", "-m", "pr_agent.app17"]
+
