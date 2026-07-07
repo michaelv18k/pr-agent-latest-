@@ -1,10 +1,10 @@
-aiohttp==3.13.4
+aiohttp==3.13.3
 anthropic>=0.69.0
 #anthropic[vertex]==0.47.1
 atlassian-python-api==3.41.4
 azure-devops==7.1.0b4
 azure-identity==1.25.0
-boto3==1.40.45
+boto3>=1.40.45
 certifi==2024.8.30
 dynaconf==3.2.4
 fastapi==0.118.0
@@ -33,7 +33,7 @@ a2a-sdk[http-server]==1.0.3
 langfuse==3.14.5
 gunicorn==23.0.0
 pytest-cov==7.0.0
-pydantic==2.13.3
+pydantic>=2.13.3
 html2text==2024.2.26
 giteapy==1.0.8
 # Uncomment the following lines to enable the 'similar issue' tool
