@@ -574,6 +574,11 @@ class AzureDevopsProvider(GitProvider):
     @staticmethod
     def _get_azure_devops_client() -> Tuple[GitClient, WorkItemTrackingClient]:
         org = get_settings().azure_devops.get("org", None)
+        
+        # Auto-fix raw org names to full URLs
+        if org and not org.startswith("http"):
+            org = f"https://dev.azure.com/{org}"
+            
         pat = get_settings().azure_devops.get("pat", None)
 
         if not org:
