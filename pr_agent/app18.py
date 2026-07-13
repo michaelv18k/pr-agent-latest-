@@ -152,7 +152,17 @@ async def receive_findings(payload: IncomingFindingsPayload):
     Receives findings from Azure DevOps pipeline, runs PR-Agent synchronously,
     and returns the merged findings directly in the HTTP response.
     """
-    pr_url = str(payload.pr_id) 
+    pr_url = str(payload.pr_id)
+    
+    # Auto-format as ADO URL if only a PR ID was passed
+    if pr_url.isdigit():
+        import os
+        org = os.getenv("AZURE_DEVOPS_ORG", "review-agent-testing")
+        project = os.getenv("AZURE_DEVOPS_PROJECT", "demo-project")
+        repo = os.getenv("AZURE_DEVOPS_REPO", "demo-project")
+        pr_url = f"https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{pr_url}"
+        
+
     pr_number = extract_pr_number(pr_url)
     
     print(f"[INFO] Started synchronous pipeline for PR: {pr_url} (PR #{pr_number})")
