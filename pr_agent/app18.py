@@ -230,7 +230,8 @@ async def receive_findings(payload: IncomingFindingsPayload):
                 "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n\n"
                 "STRICT QUALITY STANDARDS (You MUST drop any suggestion that violates these):\n"
                 "- DO NOT suggest adding hardcoded secrets, passwords, or fallback API keys. Missing secrets must be handled via secure exceptions.\n"
-                "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n\n"
+                "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n"
+                "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10, DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n\n"
                 "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
             )
             
