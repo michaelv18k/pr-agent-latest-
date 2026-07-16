@@ -221,20 +221,20 @@ async def receive_findings(payload: IncomingFindingsPayload):
             
             base_user_prompt = prompt_obj["user"]
             target = "Response (should be a valid YAML, and nothing else):"
-            gap_analysis_prompt = (
-                "\nCRITICAL REQUIREMENT (GAP ANALYSIS):\n"
-                "A previous AI agent has already analyzed the PR and made the suggestions listed in "
+            verification_prompt = (
+                "\nCRITICAL REQUIREMENT (VERIFICATION & GAP ANALYSIS):\n"
+                "A previous AI agent has analyzed the PR and made the suggestions listed in "
                 "the 'Extra user-provided instructions' section.\n\n"
-                "Your job is to identify only ADDITIONAL/NEW bugs, security issues, performance issues, or code smells "
-                "that the previous agent MISSED. Focus on deeper code quality, architectural, and performance improvements.\n"
-                "- STRICTLY FORBIDDEN: Do not repeat, rephrase, or duplicate any of those suggestions. "
-                "If you cannot find any new issues, return an empty list of suggestions: `code_suggestions: []`.\n\n"
+                "Your job has two parts:\n"
+                "1. VERIFY: Review each of the previous agent's suggestions. If a suggestion is correct and highly valuable, INCLUDE it in your output (you may improve the explanation or code). If it is a false positive, hallucination, or low-value, DO NOT include it.\n"
+                "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n"
+                "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
             )
             
             if target in base_user_prompt:
-                updated_user_prompt = base_user_prompt.replace(target, gap_analysis_prompt + target)
+                updated_user_prompt = base_user_prompt.replace(target, verification_prompt + target)
             else:
-                updated_user_prompt = base_user_prompt + "\n" + gap_analysis_prompt
+                updated_user_prompt = base_user_prompt + "\n" + verification_prompt
             get_settings().set(f"{setting_key}.user", updated_user_prompt)
         
         get_settings().set("config.publish_output", False)
@@ -246,7 +246,10 @@ async def receive_findings(payload: IncomingFindingsPayload):
         
         raw_suggestions = get_settings().get("data", {}).get("raw_data", {})
         suggestions_list = raw_suggestions.get("code_suggestions", []) if isinstance(raw_suggestions, dict) else []
-        filtered_suggestions = deduplicate_suggestions(suggestions_list, translated_findings)
+        
+        # We no longer deduplicate against the original findings, because the LLM is expected 
+        # to output the valid original findings along with any new ones.
+        filtered_suggestions = suggestions_list
         
         # 3. Format back to standard JSON
         new_suggestions = []
@@ -281,10 +284,12 @@ async def receive_findings(payload: IncomingFindingsPayload):
             elif "bug" in label or "issue" in label:
                 category = "bug"
                 
-            description = s.get("suggestion_content", "").strip()
+            description = (s.get("suggestion_content") or s.get("why") or "").strip()
             improved_code = s.get("improved_code", "").strip()
             if improved_code:
                 description += f"\n\nImproved Code:\n```\n{improved_code}\n```"
+                
+            suggestion_title = (s.get("one_sentence_summary") or s.get("suggestion_summary") or "").strip()
                 
             new_suggestions.append({
                 "file_path": s.get("relevant_file", "").strip(),
@@ -292,11 +297,12 @@ async def receive_findings(payload: IncomingFindingsPayload):
                 "severity": severity,
                 "category": category,
                 "description": description,
-                "suggestion": s.get("one_sentence_summary", "").strip(),
+                "suggestion": suggestion_title,
                 "confidence": confidence
             })
             
-        merged_suggestions = original_suggestions + new_suggestions
+        # The new_suggestions list now contains the fully verified and augmented findings
+        merged_suggestions = new_suggestions
         
         # 4. RETURN DIRECTLY TO CALLER (NO WEBHOOK!)
         return {
