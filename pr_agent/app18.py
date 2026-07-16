@@ -231,7 +231,8 @@ async def receive_findings(payload: IncomingFindingsPayload):
                 "STRICT QUALITY STANDARDS (You MUST drop any suggestion that violates these):\n"
                 "- DO NOT suggest adding hardcoded secrets, passwords, or fallback API keys. Missing secrets must be handled via secure exceptions.\n"
                 "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n"
-                "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10, DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n"
+                "- FALSE POSITIVE OVERRIDE: If you inspect the code and realize it ALREADY implements the suggestion perfectly (e.g. it is already parameterized) and your `improved_code` would be identical to the `existing_code`, you MUST DROP the suggestion entirely. This overrides the confidence rule below.\n"
+                "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10 (and is not a false positive), DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n"
                 "- DIFF PARSING RULE: When extracting `existing_code`, you MUST ONLY extract the added/current lines (lines starting with `+` or space in the diff). NEVER extract deleted lines (lines starting with `-`).\n\n"
                 "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
             )
