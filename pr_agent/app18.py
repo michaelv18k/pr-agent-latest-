@@ -227,7 +227,11 @@ async def receive_findings(payload: IncomingFindingsPayload):
                 "the 'Extra user-provided instructions' section.\n\n"
                 "Your job has two parts:\n"
                 "1. VERIFY: Review each of the previous agent's suggestions. If a suggestion is correct and highly valuable, INCLUDE it in your output (you may improve the explanation or code). If it is a false positive, hallucination, or low-value, DO NOT include it.\n"
-                "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n"
+                "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n\n"
+                "STRICT QUALITY STANDARDS (You MUST drop any suggestion that violates these):\n"
+                "- DO NOT suggest adding hardcoded secrets, passwords, or fallback API keys. Missing secrets must be handled via secure exceptions.\n"
+                "- DO NOT suggest guessing or blindly changing array indices/business logic to fix exceptions.\n"
+                "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n\n"
                 "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
             )
             
