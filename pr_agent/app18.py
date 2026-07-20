@@ -1,18 +1,43 @@
-    
 import asyncio
+import os
 import re
-from typing import Dict, Any, Union, List
+from typing import Any, Dict, List, Union
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings
 
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+# ---------------------------------------------------------------------------
+# Read ADO config once at startup — fail immediately if any are missing so
+# we never silently construct a wrong PR URL mid-request.
+# ---------------------------------------------------------------------------
+_ADO_ORG     = os.environ.get("AZURE_DEVOPS_ORG")
+_ADO_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT")
+_ADO_REPO    = os.environ.get("AZURE_DEVOPS_REPO")
+
+_missing = [k for k, v in {
+    "AZURE_DEVOPS_ORG":     _ADO_ORG,
+    "AZURE_DEVOPS_PROJECT": _ADO_PROJECT,
+    "AZURE_DEVOPS_REPO":    _ADO_REPO,
+}.items() if not v]
+
+if _missing:
+    raise ValueError(
+        f"[app18] Missing required environment variable(s): {', '.join(_missing)}. "
+        "Set them before starting the server."
+    )
 
 app = FastAPI(title="PR-Agent & Aider-Agent Integration Server")
+
+# Serializes concurrent requests so no two PRs mutate global settings at the same time.
+# PR-Agent uses a global settings singleton — without this lock, two simultaneous
+# PR reviews would overwrite each other's injected findings mid-flight.
+_settings_lock = asyncio.Lock()
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -156,12 +181,10 @@ async def receive_findings(payload: IncomingFindingsPayload):
     
     # Auto-format as ADO URL if only a PR ID was passed
     if pr_url.isdigit():
-        import os
-        org = os.getenv("AZURE_DEVOPS_ORG", "review-agent-testing")
-        project = os.getenv("AZURE_DEVOPS_PROJECT", "demo-project")
-        repo = os.getenv("AZURE_DEVOPS_REPO", "demo-project")
-        pr_url = f"https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{pr_url}"
-        
+        pr_url = (
+            f"https://dev.azure.com/{_ADO_ORG}/{_ADO_PROJECT}"
+            f"/_git/{_ADO_REPO}/pullrequest/{pr_url}"
+        )
 
     pr_number = extract_pr_number(pr_url)
     
@@ -193,145 +216,150 @@ async def receive_findings(payload: IncomingFindingsPayload):
         
     findings_text = format_findings(translated_findings)
     original_suggestions = [item.dict() for item in payload.my_suggestions]
-    
-    # Store original prompt templates to restore in finally block
-    original_prompts = {}
-    for setting_key in ["pr_code_suggestions_prompt", "pr_code_suggestions_prompt_not_decoupled"]:
-        prompt_obj = get_settings().get(setting_key, {})
-        if prompt_obj and "user" in prompt_obj:
-            original_prompts[setting_key] = prompt_obj["user"]
-            
-    original_focus = get_settings().get("pr_code_suggestions.focus_only_on_problems")
-    original_num_suggestions = get_settings().get("pr_code_suggestions.num_code_suggestions_per_chunk")
-    original_extra_instructions = get_settings().get("pr_code_suggestions.extra_instructions")
-    original_reasoning = get_settings().get("config.model_reasoning")
-    
-    try:
-        # Optimize PR-Agent configurations
-        get_settings().set("pr_code_suggestions.focus_only_on_problems", False)
-        get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", 3)
-        get_settings().set("config.model_reasoning", "groq/llama-3.3-70b-versatile")
-        get_settings().set("pr_code_suggestions.extra_instructions", findings_text)
-        
-        # Dynamically modify user prompt templates
+
+    # Acquire lock before touching any global settings.
+    # This serializes concurrent PR reviews so they don't overwrite each other.
+    async with _settings_lock:
+        # Store original prompt templates to restore in finally block
+        original_prompts = {}
         for setting_key in ["pr_code_suggestions_prompt", "pr_code_suggestions_prompt_not_decoupled"]:
             prompt_obj = get_settings().get(setting_key, {})
-            if not prompt_obj or "user" not in prompt_obj:
-                continue
-            
-            base_user_prompt = prompt_obj["user"]
-            target = "Response (should be a valid YAML, and nothing else):"
-            verification_prompt = (
-                "\nCRITICAL REQUIREMENT (VERIFICATION & GAP ANALYSIS):\n"
-                "A previous AI agent has analyzed the PR and made the suggestions listed in "
-                "the 'Extra user-provided instructions' section.\n\n"
-                "Your job has two parts:\n"
-                "1. VERIFY: Review each of the previous agent's suggestions. If a suggestion is correct and highly valuable, INCLUDE it in your output (you may improve the explanation or code). If it is a false positive, hallucination, or low-value, DO NOT include it.\n"
-                "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n\n"
-                "STRICT QUALITY STANDARDS (You MUST drop any suggestion that violates these):\n"
-                "- DO NOT suggest adding hardcoded secrets, passwords, or fallback API keys. Missing secrets must be handled via secure exceptions.\n"
-                "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n"
-                "- FALSE POSITIVE OVERRIDE: If you inspect the code and realize it ALREADY implements the suggestion perfectly (e.g. it is already parameterized) and your `improved_code` would be identical to the `existing_code`, you MUST DROP the suggestion entirely. This overrides the confidence rule below.\n"
-                "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10 (and is not a false positive), DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n"
-                "- DIFF PARSING RULE: When extracting `existing_code`, you MUST ONLY extract the added/current lines (lines starting with `+` or space in the diff). NEVER extract deleted lines (lines starting with `-`).\n\n"
-                "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
-            )
-            
-            if target in base_user_prompt:
-                updated_user_prompt = base_user_prompt.replace(target, verification_prompt + target)
-            else:
-                updated_user_prompt = base_user_prompt + "\n" + verification_prompt
-            get_settings().set(f"{setting_key}.user", updated_user_prompt)
-        
-        get_settings().set("config.publish_output", False)
-        
-        # 2. RUN PR-AGENT SYNCHRONOUSLY
-        agent = PRAgent()
-        success = await agent.handle_request(pr_url, "improve")
-        print(f"[INFO] PR-Agent pipeline completed. Success={success}")
-        
-        raw_suggestions = get_settings().get("data", {}).get("raw_data", {})
-        suggestions_list = raw_suggestions.get("code_suggestions", []) if isinstance(raw_suggestions, dict) else []
-        
-        # We no longer deduplicate against the original findings, because the LLM is expected 
-        # to output the valid original findings along with any new ones.
-        filtered_suggestions = suggestions_list
-        
-        # 3. Format back to standard JSON
-        new_suggestions = []
-        for s in filtered_suggestions:
-            score_val = s.get("score")
-            confidence = 0.7
-            if score_val is not None:
-                try:
-                    confidence = round(float(score_val) / 10.0, 2)
-                except ValueError:
-                    pass
-                    
-            severity = "minor"
-            if score_val is not None:
-                try:
-                    iscore = int(score_val)
-                    if iscore >= 9:
-                        severity = "critical"
-                    elif iscore >= 7:
-                        severity = "major"
-                    elif iscore >= 4:
-                        severity = "medium"
-                except ValueError:
-                    pass
-                    
-            label = s.get("label", "code_quality").strip().lower()
-            category = "code_quality"
-            if "security" in label:
-                category = "security"
-            elif "performance" in label:
-                category = "performance"
-            elif "bug" in label or "issue" in label:
-                category = "bug"
-                
-            description = (s.get("suggestion_content") or s.get("why") or "").strip()
-            improved_code = s.get("improved_code", "").strip()
-            if improved_code:
-                description += f"\n\nImproved Code:\n```\n{improved_code}\n```"
-                
-            suggestion_title = (s.get("one_sentence_summary") or s.get("suggestion_summary") or "").strip()
-                
-            new_suggestions.append({
-                "file_path": s.get("relevant_file", "").strip(),
-                "line_number": s.get("relevant_lines_start"),
-                "severity": severity,
-                "category": category,
-                "description": description,
-                "suggestion": suggestion_title,
-                "confidence": confidence
-            })
-            
-        # The new_suggestions list now contains the fully verified and augmented findings
-        merged_suggestions = new_suggestions
-        
-        # 4. RETURN DIRECTLY TO CALLER (NO WEBHOOK!)
-        return {
-            "status": "success",
-            "pr_number": pr_number,
-            "refined_findings": merged_suggestions
-        }
+            if prompt_obj and "user" in prompt_obj:
+                original_prompts[setting_key] = prompt_obj["user"]
 
-    except Exception as e:
-        print(f"[ERROR] Failed during pipeline execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Restore configurations
-        for setting_key, original_prompt in original_prompts.items():
-            get_settings().set(f"{setting_key}.user", original_prompt)
-        if original_focus is not None:
-            get_settings().set("pr_code_suggestions.focus_only_on_problems", original_focus)
-        if original_num_suggestions is not None:
-            get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", original_num_suggestions)
-        if original_extra_instructions is not None:
-            get_settings().set("pr_code_suggestions.extra_instructions", original_extra_instructions)
-        if original_reasoning is not None:
-            get_settings().set("config.model_reasoning", original_reasoning)
+        original_focus = get_settings().get("pr_code_suggestions.focus_only_on_problems")
+        original_num_suggestions = get_settings().get("pr_code_suggestions.num_code_suggestions_per_chunk")
+        original_extra_instructions = get_settings().get("pr_code_suggestions.extra_instructions")
+        original_reasoning = get_settings().get("config.model_reasoning")
+
+        try:
+            # Optimize PR-Agent configurations
+            get_settings().set("pr_code_suggestions.focus_only_on_problems", False)
+            get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", 3)
+            get_settings().set("config.model_reasoning", "groq/llama-3.3-70b-versatile")
+            get_settings().set("pr_code_suggestions.extra_instructions", findings_text)
+
+            # Dynamically modify user prompt templates
+            for setting_key in ["pr_code_suggestions_prompt", "pr_code_suggestions_prompt_not_decoupled"]:
+                prompt_obj = get_settings().get(setting_key, {})
+                if not prompt_obj or "user" not in prompt_obj:
+                    continue
+
+                base_user_prompt = prompt_obj["user"]
+                target = "Response (should be a valid YAML, and nothing else):"
+                verification_prompt = (
+                    "\nCRITICAL REQUIREMENT (VERIFICATION & GAP ANALYSIS):\n"
+                    "A previous AI agent has analyzed the PR and made the suggestions listed in "
+                    "the 'Extra user-provided instructions' section.\n\n"
+                    "Your job has two parts:\n"
+                    "1. VERIFY: Review each of the previous agent's suggestions. If a suggestion is correct and highly valuable, INCLUDE it in your output (you may improve the explanation or code). If it is a false positive, hallucination, or low-value, DO NOT include it.\n"
+                    "2. DISCOVER: Identify any ADDITIONAL/NEW bugs, security issues, or performance problems that the previous agent missed.\n\n"
+                    "STRICT QUALITY STANDARDS (You MUST drop any suggestion that violates these):\n"
+                    "- DO NOT suggest adding hardcoded secrets, passwords, or fallback API keys. Missing secrets must be handled via secure exceptions.\n"
+                    "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n"
+                    "- FALSE POSITIVE OVERRIDE: If you inspect the code and realize it ALREADY implements the suggestion perfectly (e.g. it is already parameterized) and your `improved_code` would be identical to the `existing_code`, you MUST DROP the suggestion entirely. This overrides the confidence rule below.\n"
+                    "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10 (and is not a false positive), DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n"
+                    "- DIFF PARSING RULE: When extracting `existing_code`, you MUST ONLY extract the added/current lines (lines starting with `+` or space in the diff). NEVER extract deleted lines (lines starting with `-`).\n\n"
+                    "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
+                )
+
+                if target in base_user_prompt:
+                    updated_user_prompt = base_user_prompt.replace(target, verification_prompt + target)
+                else:
+                    updated_user_prompt = base_user_prompt + "\n" + verification_prompt
+                get_settings().set(f"{setting_key}.user", updated_user_prompt)
+
+            get_settings().set("config.publish_output", False)
+
+            # 2. RUN PR-AGENT SYNCHRONOUSLY
+            agent = PRAgent()
+            success = await agent.handle_request(pr_url, "improve")
+            print(f"[INFO] PR-Agent pipeline completed. Success={success}")
+
+            raw_suggestions = get_settings().get("data", {}).get("raw_data", {})
+            suggestions_list = raw_suggestions.get("code_suggestions", []) if isinstance(raw_suggestions, dict) else []
+
+            # We no longer deduplicate against the original findings, because the LLM is expected
+            # to output the valid original findings along with any new ones.
+            filtered_suggestions = suggestions_list
+
+            # 3. Format back to standard JSON
+            new_suggestions = []
+            for s in filtered_suggestions:
+                score_val = s.get("score")
+                confidence = 0.7
+                if score_val is not None:
+                    try:
+                        confidence = round(float(score_val) / 10.0, 2)
+                    except ValueError:
+                        pass
+
+                severity = "minor"
+                if score_val is not None:
+                    try:
+                        iscore = int(score_val)
+                        if iscore >= 9:
+                            severity = "critical"
+                        elif iscore >= 7:
+                            severity = "major"
+                        elif iscore >= 4:
+                            severity = "major"  # mapped from medium so Aider picks it up
+                    except ValueError:
+                        pass
+
+                label = s.get("label", "code_quality").strip().lower()
+                category = "code_quality"
+                if "security" in label:
+                    category = "security"
+                elif "performance" in label:
+                    category = "performance"
+                elif "bug" in label or "issue" in label:
+                    category = "bug"
+
+                description = (s.get("suggestion_content") or s.get("why") or "").strip()
+                improved_code = s.get("improved_code", "").strip()
+                if improved_code:
+                    description += f"\n\nImproved Code:\n```\n{improved_code}\n```"
+
+                suggestion_title = (s.get("one_sentence_summary") or s.get("suggestion_summary") or "").strip()
+
+                new_suggestions.append({
+                    "file_path": s.get("relevant_file", "").strip(),
+                    "line_number": s.get("relevant_lines_start"),
+                    "severity": severity,
+                    "category": category,
+                    "description": description,
+                    "suggestion": suggestion_title,
+                    "confidence": confidence
+                })
+
+            # The new_suggestions list now contains the fully verified and augmented findings
+            merged_suggestions = new_suggestions
+
+            # 4. RETURN DIRECTLY TO CALLER (NO WEBHOOK!)
+            return {
+                "status": "success",
+                "pr_number": pr_number,
+                "refined_findings": merged_suggestions
+            }
+
+        except Exception as e:
+            print(f"[ERROR] Failed during pipeline execution: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            # Restore all settings — guaranteed to run before the next request acquires the lock
+            for setting_key, original_prompt in original_prompts.items():
+                get_settings().set(f"{setting_key}.user", original_prompt)
+            if original_focus is not None:
+                get_settings().set("pr_code_suggestions.focus_only_on_problems", original_focus)
+            if original_num_suggestions is not None:
+                get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", original_num_suggestions)
+            if original_extra_instructions is not None:
+                get_settings().set("pr_code_suggestions.extra_instructions", original_extra_instructions)
+            if original_reasoning is not None:
+                get_settings().set("config.model_reasoning", original_reasoning)
+
 
 if __name__ == "__main__":
     uvicorn.run("pr_agent.app18:app", host="0.0.0.0", port=8000, reload=True)
+
