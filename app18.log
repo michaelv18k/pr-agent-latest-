@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/as-mac-1346/Desktop/Review_Agent_v2/pr-agent-latest-/pr_agent/app18.py", line 6, in <module>
+    import uvicorn
+ModuleNotFoundError: No module named 'uvicorn'

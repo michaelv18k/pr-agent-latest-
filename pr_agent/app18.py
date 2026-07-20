@@ -16,6 +16,9 @@ from pr_agent.config_loader import get_settings
 # ADO config will be read per-request to allow dotenv or uvicorn to load 
 # env vars dynamically.
 # ---------------------------------------------------------------------------
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file so AZURE_DEVOPS variables are present
+
 
 app = FastAPI(title="PR-Agent & Aider-Agent Integration Server")
 
@@ -277,7 +280,9 @@ async def receive_findings(payload: IncomingFindingsPayload):
             success = await agent.handle_request(pr_url, "improve")
             print(f"[INFO] PR-Agent pipeline completed. Success={success}")
 
-            raw_suggestions = get_settings().get("data", {}).get("raw_data", {})
+            # Safely get data preventing AttributeError if data is None
+            data = get_settings().get("data", {}) or {}
+            raw_suggestions = data.get("raw_data", {}) or {}
             suggestions_list = raw_suggestions.get("code_suggestions", []) if isinstance(raw_suggestions, dict) else []
 
             # We no longer deduplicate against the original findings, because the LLM is expected
