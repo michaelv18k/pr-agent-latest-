@@ -13,24 +13,9 @@ from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings
 
 # ---------------------------------------------------------------------------
-# Read ADO config once at startup — fail immediately if any are missing so
-# we never silently construct a wrong PR URL mid-request.
+# ADO config will be read per-request to allow dotenv or uvicorn to load 
+# env vars dynamically.
 # ---------------------------------------------------------------------------
-_ADO_ORG     = os.environ.get("AZURE_DEVOPS_ORG")
-_ADO_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT")
-_ADO_REPO    = os.environ.get("AZURE_DEVOPS_REPO")
-
-_missing = [k for k, v in {
-    "AZURE_DEVOPS_ORG":     _ADO_ORG,
-    "AZURE_DEVOPS_PROJECT": _ADO_PROJECT,
-    "AZURE_DEVOPS_REPO":    _ADO_REPO,
-}.items() if not v]
-
-if _missing:
-    raise ValueError(
-        f"[app18] Missing required environment variable(s): {', '.join(_missing)}. "
-        "Set them before starting the server."
-    )
 
 app = FastAPI(title="PR-Agent & Aider-Agent Integration Server")
 
@@ -181,6 +166,22 @@ async def receive_findings(payload: IncomingFindingsPayload):
     
     # Auto-format as ADO URL if only a PR ID was passed
     if pr_url.isdigit():
+        _ADO_ORG     = os.environ.get("AZURE_DEVOPS_ORG")
+        _ADO_PROJECT = os.environ.get("AZURE_DEVOPS_PROJECT")
+        _ADO_REPO    = os.environ.get("AZURE_DEVOPS_REPO")
+        
+        _missing = [k for k, v in {
+            "AZURE_DEVOPS_ORG":     _ADO_ORG,
+            "AZURE_DEVOPS_PROJECT": _ADO_PROJECT,
+            "AZURE_DEVOPS_REPO":    _ADO_REPO,
+        }.items() if not v]
+        
+        if _missing:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"[app18] Missing required environment variable(s): {', '.join(_missing)}"
+            )
+
         pr_url = (
             f"https://dev.azure.com/{_ADO_ORG}/{_ADO_PROJECT}"
             f"/_git/{_ADO_REPO}/pullrequest/{pr_url}"
