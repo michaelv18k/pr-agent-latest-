@@ -4,8 +4,8 @@
 
 [config]
 # models
-model = "groq/llama-3.1-8b-instant"
-fallback_models = ["groq/llama-3.3-70b-versatile"]
+model = "bedrock/amazon.nova-pro-v1:0"
+fallback_models = ["bedrock/amazon.nova-pro-v1:0"]
 
 #model="gpt-5.5-2026-04-23"
 #fallback_models=["gpt-5.4-mini"]
