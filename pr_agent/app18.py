@@ -239,7 +239,7 @@ async def receive_findings(payload: IncomingFindingsPayload):
         try:
             # Optimize PR-Agent configurations
             get_settings().set("pr_code_suggestions.focus_only_on_problems", False)
-            get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", 3)
+            get_settings().set("pr_code_suggestions.num_code_suggestions_per_chunk", 6)
             get_settings().set("config.model_reasoning", "groq/llama-3.3-70b-versatile")
             get_settings().set("pr_code_suggestions.extra_instructions", findings_text)
 
@@ -263,6 +263,7 @@ async def receive_findings(payload: IncomingFindingsPayload):
                     "- Do NOT suggest introducing NEW hardcoded secrets as a fix. The fix must always be to use os.getenv() or a secrets manager.\n"
                     "- DO NOT suggest adding `# noqa` to suppress unused imports; the correct suggestion is to delete the unused import.\n"
                     "- FALSE POSITIVE OVERRIDE: If you inspect the code and realize it ALREADY implements the suggestion perfectly (e.g. it is already parameterized) and your `improved_code` would be identical to the `existing_code`, you MUST DROP the suggestion entirely. This overrides the confidence rule below.\n"
+                    "- ALREADY-CORRECT WHITESPACE RULE: If code already uses the correct pattern (e.g. parameterized query with `= ?`), do NOT suggest changing whitespace, spacing, or operator formatting. `= ?` and `=?` are NOT equivalent — only suggest changes that fix a real functional problem.\n"
                     "- CONFIDENCE PRESERVATION: If a suggestion has an 'Original Score' of 9 or 10 (and is not a false positive), DO NOT hedge your bets. You MUST output a `suggestion_score` of 9 or 10 for it.\n"
                     "- DIFF PARSING RULE: When extracting `existing_code`, you MUST ONLY extract the added/current lines (lines starting with `+` or space in the diff). NEVER extract deleted lines (lines starting with `-`).\n\n"
                     "- Output a single, comprehensive list of `code_suggestions` containing both the verified previous suggestions and your new discoveries.\n\n"
@@ -310,7 +311,8 @@ async def receive_findings(payload: IncomingFindingsPayload):
                         elif iscore >= 7:
                             severity = "major"
                         elif iscore >= 4:
-                            severity = "major"  # mapped from medium so Aider picks it up
+                            severity = "minor"
+                        # scores 1-3: stay as "minor" (default)
                     except ValueError:
                         pass
 
